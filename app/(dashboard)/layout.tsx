@@ -15,8 +15,11 @@ export default async function DashboardLayout({
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <main className="pb-20">{children}</main>
       <Navigation />
+      {/* Mobile: pb-20 for bottom nav | Desktop: pt-14 for top nav */}
+      <main className="pb-20 md:pb-8 md:pt-14">
+        {children}
+      </main>
     </div>
   )
 }

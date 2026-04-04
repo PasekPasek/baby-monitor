@@ -108,6 +108,31 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
 })
 
+// Agent long-term memory — observations and patterns across runs
+export const agentMemory = pgTable("agent_memory", {
+  id: text("id").primaryKey(),
+  babyId: text("baby_id")
+    .notNull()
+    .references(() => babies.id, { onDelete: "cascade" }),
+  type: text("type", { enum: ["observation", "pattern", "decision"] }).notNull(),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+  relevantUntil: timestamp("relevant_until", { mode: "date" }),
+})
+
+// Agent run log — decision audit trail for each heartbeat execution
+export const agentRuns = pgTable("agent_runs", {
+  id: text("id").primaryKey(),
+  babyId: text("baby_id")
+    .notNull()
+    .references(() => babies.id, { onDelete: "cascade" }),
+  ranAt: timestamp("ran_at", { mode: "date" }).defaultNow().notNull(),
+  actionsPerformed: jsonb("actions_performed").notNull().default([]),
+  stepsCount: integer("steps_count").notNull().default(0),
+  model: text("model"),
+  triggeredBy: text("triggered_by").default("cron"),
+})
+
 // Types for event data (for TypeScript safety)
 export type FeedingData = {
   type: "breast" | "bottle"
@@ -175,3 +200,5 @@ export type NewEvent = typeof events.$inferInsert
 export type User = typeof users.$inferSelect
 export type Baby = typeof babies.$inferSelect
 export type Notification = typeof notifications.$inferSelect
+export type AgentMemory = typeof agentMemory.$inferSelect
+export type AgentRun = typeof agentRuns.$inferSelect

@@ -2,13 +2,18 @@
  * Heartbeat AI Agent — runs every 30 minutes via cron-job.org
  * Checks baby data and sends SMS reminders when needed.
  * Pattern from AI-devs course: tool-calling agent loop.
+ *
+ * Improvements:
+ * - Propozycja 3: Agent memory (read_memory / write_memory tools)
+ * - Propozycja 4: SMART_MODEL for weekly summary, DEFAULT_MODEL for regular checks
+ * - Propozycja 5: Decision log saved to agent_runs table after each run
  */
-import { openrouter, DEFAULT_MODEL } from "./openrouter"
+import { openrouter, DEFAULT_MODEL, SMART_MODEL } from "./openrouter"
 import { db } from "./db"
-import { events, notifications } from "./schema"
+import { events, notifications, agentMemory, agentRuns } from "./schema"
 import { getOrCreateBaby, getBabyAge } from "./baby"
 import { sendToAllParents } from "./sms"
-import { desc, eq, and, gte } from "drizzle-orm"
+import { desc, eq, and, gte, or, isNull } from "drizzle-orm"
 import type OpenAI from "openai"
 
 const MAX_STEPS = 15
@@ -93,6 +98,41 @@ const tools: OpenAI.Chat.ChatCompletionTool[] = [
       name: "get_weekly_stats",
       description: "Zwraca statystyki z ostatnich 7 dni: waga, karmienia, sen, kąpiele. Używaj do cotygodniowego podsumowania.",
       parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  // ─── Propozycja 3: Agent memory tools ───────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "read_memory",
+      description: "Odczytuje zapamiętane obserwacje i wzorce z poprzednich uruchomień agenta. Używaj na początku każdego uruchomienia.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_memory",
+      description: "Zapisuje nową obserwację, wzorzec lub decyzję do długoterminowej pamięci agenta. Używaj gdy zauważysz coś ważnego.",
+      parameters: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["observation", "pattern", "decision"],
+            description: "observation=jednorazowa obserwacja, pattern=powtarzający się wzorzec, decision=podjęta decyzja i jej uzasadnienie",
+          },
+          content: {
+            type: "string",
+            description: "Treść po polsku, max 200 znaków. Np. 'Zuzia regularnie robi 4h przerwy nocne od 7 dni'",
+          },
+          relevantDays: {
+            type: "number",
+            description: "Przez ile dni ta obserwacja jest istotna. Domyślnie 30.",
+          },
+        },
+        required: ["type", "content"],
+      },
     },
   },
 ]
@@ -197,6 +237,47 @@ async function handleTool(name: string, args: Record<string, unknown>) {
       }
     }
 
+    // ─── Propozycja 3: Memory handlers ──────────────────────────────────
+
+    case "read_memory": {
+      const now = new Date()
+      const memories = await db.query.agentMemory.findMany({
+        where: and(
+          eq(agentMemory.babyId, baby.id),
+          or(
+            isNull(agentMemory.relevantUntil),
+            gte(agentMemory.relevantUntil, now)
+          )
+        ),
+        orderBy: [desc(agentMemory.createdAt)],
+        limit: 20,
+      })
+      if (memories.length === 0) return { memories: [], note: "Brak zapamiętanych obserwacji." }
+      return {
+        memories: memories.map((m) => ({
+          type: m.type,
+          content: m.content,
+          createdAt: m.createdAt,
+        })),
+      }
+    }
+
+    case "write_memory": {
+      const type = args.type as "observation" | "pattern" | "decision"
+      const content = args.content as string
+      const days = (args.relevantDays as number) || 30
+      const relevantUntil = new Date(Date.now() + days * 24 * 3600 * 1000)
+
+      await db.insert(agentMemory).values({
+        id: crypto.randomUUID(),
+        babyId: baby.id,
+        type,
+        content: content.slice(0, 500),
+        relevantUntil,
+      })
+      return { saved: true }
+    }
+
     default:
       return { error: `Unknown tool: ${name}` }
   }
@@ -210,9 +291,14 @@ export async function runHeartbeatAgent(): Promise<{ actionsPerformed: string[] 
   const now = new Date()
   const isWeeklySummaryDay = now.getDay() === 0 && now.getHours() >= 19 && now.getHours() <= 21
 
+  // Propozycja 4: Use SMART_MODEL for weekly summary (better quality reasoning)
+  const model = isWeeklySummaryDay ? SMART_MODEL : DEFAULT_MODEL
+
   const systemPrompt = `Jesteś troskliwym asystentem monitorującym noworodka ${baby.name} (wiek: ${age.label}, urodzony ${baby.birthDate.toLocaleDateString("pl-PL")}).
 
 Teraz jest: ${now.toLocaleString("pl-PL", { timeZone: "Europe/Warsaw" })}
+
+ZAWSZE zaczynaj od wywołania read_memory() — sprawdź co zapamiętałeś z poprzednich uruchomień.
 
 Twoje zadania w tej chwili:
 1. Sprawdź kiedy było ostatnie karmienie i czy należy wysłać przypomnienie
@@ -231,6 +317,12 @@ ZASADY KARMIENIA dla noworodka (ilość → kiedy przypomnieć):
 - 60-90ml lub 20-30 min pierś → 3h
 - > 90ml lub > 30 min pierś → 3.5h
 
+PAMIĘĆ:
+- Po każdym uruchomieniu zapisz istotne obserwacje (write_memory)
+- Jeśli widzisz powtarzający się wzorzec (np. Zuzia je mniej w nocy) — zapisz jako "pattern"
+- Jeśli podejmujesz niestandardową decyzję — zapisz jako "decision" z uzasadnieniem
+- Jeśli zapamiętany wzorzec tłumaczy brak alertu (np. nocna przerwa w jedzeniu to norma) — nie wysyłaj SMS
+
 WAŻNE:
 - Zawsze najpierw sprawdź check_notification_sent przed wysłaniem SMS (unikaj duplikatów)
 - SMS max 160 znaków
@@ -246,10 +338,12 @@ COTYGODNIOWE PODSUMOWANIE FORMAT:
   ]
 
   const actionsPerformed: string[] = []
+  let stepsCount = 0
 
   for (let step = 0; step < MAX_STEPS; step++) {
+    stepsCount++
     const response = await openrouter.chat.completions.create({
-      model: DEFAULT_MODEL,
+      model,
       messages,
       tools,
       tool_choice: "auto",
@@ -282,6 +376,20 @@ COTYGODNIOWE PODSUMOWANIE FORMAT:
     )
 
     messages.push(...toolResults)
+  }
+
+  // Propozycja 5: Save decision log to agent_runs table
+  try {
+    await db.insert(agentRuns).values({
+      id: crypto.randomUUID(),
+      babyId: baby.id,
+      actionsPerformed,
+      stepsCount,
+      model,
+      triggeredBy: "cron",
+    })
+  } catch {
+    // Don't fail the run if logging fails
   }
 
   return { actionsPerformed }

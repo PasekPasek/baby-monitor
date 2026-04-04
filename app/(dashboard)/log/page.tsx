@@ -1,6 +1,12 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +46,70 @@ function toLocalDateTimeString(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+/** Splits "2026-04-04T14:30" into { datePart: "2026-04-04", timePart: "14:30" } */
+function splitDateTime(dt: string) {
+  const [datePart = "", timePart = ""] = dt.split("T")
+  return { datePart, timePart }
+}
+
+/** Merges date + time strings back into "2026-04-04T14:30" */
+function mergeDateTime(datePart: string, timePart: string) {
+  return `${datePart}T${timePart}`
+}
+
+/**
+ * Date input + custom hour/minute selects — always 24h regardless of OS locale.
+ */
+function DateTimeInput({
+  value,
+  onChange,
+  required,
+}: {
+  value: string
+  onChange: (v: string) => void
+  required?: boolean
+}) {
+  const { datePart, timePart } = splitDateTime(value)
+  const [hh, mm] = timePart.split(":").map((s) => s.padStart(2, "0"))
+  const pad = (n: number) => String(n).padStart(2, "0")
+
+  const selectClass =
+    "border border-gray-200 rounded-xl px-3 py-3 text-base text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+
+  return (
+    <div className="flex gap-2 items-center">
+      <input
+        type="date"
+        value={datePart}
+        onChange={(e) => onChange(mergeDateTime(e.target.value, timePart))}
+        required={required}
+        className={`flex-1 border border-gray-200 rounded-xl px-4 py-3 text-base text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent`}
+      />
+      <select
+        value={hh ?? "00"}
+        onChange={(e) => onChange(mergeDateTime(datePart, `${e.target.value}:${mm ?? "00"}`))}
+        className={selectClass}
+        aria-label="Godzina"
+      >
+        {Array.from({ length: 24 }, (_, i) => pad(i)).map((h) => (
+          <option key={h} value={h}>{h}</option>
+        ))}
+      </select>
+      <span className="text-gray-400 font-medium select-none">:</span>
+      <select
+        value={mm ?? "00"}
+        onChange={(e) => onChange(mergeDateTime(datePart, `${hh ?? "00"}:${e.target.value}`))}
+        className={selectClass}
+        aria-label="Minuty"
+      >
+        {Array.from({ length: 60 }, (_, i) => pad(i)).map((m) => (
+          <option key={m} value={m}>{m}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 async function postEvent(type: string, data: Record<string, unknown>, occurredAt: string) {
   const res = await fetch("/api/events", {
     method: "POST",
@@ -69,7 +139,7 @@ function Toast({ toast, onClose }: { toast: ToastState; onClose: () => void }) {
 
   return (
     <div
-      className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium transition-all duration-300 max-w-[calc(100vw-2rem)] text-center ${
+      className={`fixed top-4 left-1/2 -translate-x-1/2 z-[200] px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium max-w-[calc(100vw-2rem)] text-center ${
         toast.type === "success" ? "bg-green-500" : "bg-red-500"
       }`}
       role="alert"
@@ -79,76 +149,9 @@ function Toast({ toast, onClose }: { toast: ToastState; onClose: () => void }) {
   )
 }
 
-// ─── Bottom Sheet ─────────────────────────────────────────────────────────────
+// ─── Form primitives ──────────────────────────────────────────────────────────
 
-interface BottomSheetProps {
-  title: string
-  onClose: () => void
-  children: React.ReactNode
-}
-
-function BottomSheet({ title, onClose, children }: BottomSheetProps) {
-  const overlayRef = useRef<HTMLDivElement>(null)
-
-  // Close on backdrop click
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === overlayRef.current) onClose()
-  }
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
-    }
-    document.addEventListener("keydown", handler)
-    return () => document.removeEventListener("keydown", handler)
-  }, [onClose])
-
-  // Prevent body scroll
-  useEffect(() => {
-    document.body.style.overflow = "hidden"
-    return () => { document.body.style.overflow = "" }
-  }, [])
-
-  return (
-    <div
-      ref={overlayRef}
-      className="fixed inset-0 z-50 bg-black/40 flex items-end justify-center"
-      onClick={handleOverlayClick}
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-    >
-      <div className="w-full max-w-md bg-white rounded-t-2xl shadow-xl overflow-hidden">
-        {/* Handle */}
-        <div className="flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 rounded-full bg-gray-200" />
-        </div>
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
-          <h2 className="text-base font-semibold text-gray-800">{title}</h2>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-            aria-label="Zamknij"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="px-5 py-4 pb-8 max-h-[80vh] overflow-y-auto">
-          {children}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Form fields ──────────────────────────────────────────────────────────────
-
-function Label({ children }: { children: React.ReactNode }) {
+function FormLabel({ children }: { children: React.ReactNode }) {
   return (
     <label className="block text-sm font-medium text-gray-700 mb-1.5">
       {children}
@@ -156,7 +159,7 @@ function Label({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+function FormInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
@@ -205,13 +208,7 @@ function RadioGroup({ options, value, onChange, name }: RadioGroupProps) {
   )
 }
 
-function SubmitButton({
-  loading,
-  children,
-}: {
-  loading: boolean
-  children: React.ReactNode
-}) {
+function SubmitButton({ loading, children }: { loading: boolean; children: React.ReactNode }) {
   return (
     <button
       type="submit"
@@ -250,7 +247,7 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Sposób karmienia</Label>
+        <FormLabel>Sposób karmienia</FormLabel>
         <RadioGroup
           name="feedType"
           value={feedType}
@@ -265,7 +262,7 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
       {feedType === "breast" ? (
         <>
           <div>
-            <Label>Strona</Label>
+            <FormLabel>Strona</FormLabel>
             <RadioGroup
               name="side"
               value={side}
@@ -277,8 +274,8 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
             />
           </div>
           <div>
-            <Label>Czas karmienia (minuty)</Label>
-            <Input
+            <FormLabel>Czas karmienia (minuty)</FormLabel>
+            <FormInput
               type="number"
               placeholder="np. 15"
               min="1"
@@ -290,8 +287,8 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
         </>
       ) : (
         <div>
-          <Label>Ilość (ml)</Label>
-          <Input
+          <FormLabel>Ilość (ml)</FormLabel>
+          <FormInput
             type="number"
             placeholder="np. 60"
             min="1"
@@ -303,13 +300,8 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
       )}
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz karmienie</SubmitButton>
@@ -332,7 +324,7 @@ function DiaperForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Typ pieluszki</Label>
+        <FormLabel>Typ pieluszki</FormLabel>
         <RadioGroup
           name="diaperType"
           value={diaperType}
@@ -346,13 +338,8 @@ function DiaperForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
       </div>
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz pieluchę</SubmitButton>
@@ -376,7 +363,6 @@ function SleepForm({
     e.preventDefault()
     setLoading(true)
     if (isSleeping) {
-      // End sleep — update via separate call or just log end
       await onSave(
         { startTime: activeSleep!.startTime, endTime: new Date(time).toISOString() },
         time
@@ -393,19 +379,14 @@ function SleepForm({
         <span className="text-5xl">{isSleeping ? "☀️" : "🌙"}</span>
         <p className="text-sm text-gray-500 mt-2">
           {isSleeping
-            ? "Dziecko śpi od " + new Date(activeSleep!.startTime).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })
+            ? "Dziecko śpi od " + splitDateTime(toLocalDateTimeString(new Date(activeSleep!.startTime))).timePart
             : "Dziecko nie śpi"}
         </p>
       </div>
 
       <div>
-        <Label>{isSleeping ? "Godzina wstania" : "Godzina zaśnięcia"}</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>{isSleeping ? "Godzina wstania" : "Godzina zaśnięcia"}</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <button
@@ -438,7 +419,7 @@ function BathForm({ onSave }: { onSave: (data: Record<string, unknown>, t: strin
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Notatki (opcjonalne)</Label>
+        <FormLabel>Notatki (opcjonalne)</FormLabel>
         <Textarea
           placeholder="np. kąpiel wieczorna, szampon..."
           value={notes}
@@ -447,13 +428,8 @@ function BathForm({ onSave }: { onSave: (data: Record<string, unknown>, t: strin
       </div>
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz kąpiel</SubmitButton>
@@ -478,7 +454,7 @@ function WeightForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Jednostka</Label>
+        <FormLabel>Jednostka</FormLabel>
         <RadioGroup
           name="unit"
           value={unit}
@@ -491,8 +467,8 @@ function WeightForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
       </div>
 
       <div>
-        <Label>Waga ({unit})</Label>
-        <Input
+        <FormLabel>Waga ({unit})</FormLabel>
+        <FormInput
           type="number"
           placeholder={unit === "g" ? "np. 3500" : "np. 3.5"}
           step={unit === "kg" ? "0.001" : "1"}
@@ -504,13 +480,8 @@ function WeightForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
       </div>
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz wagę</SubmitButton>
@@ -545,8 +516,8 @@ function HealthForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Temperatura (°C)</Label>
-        <Input
+        <FormLabel>Temperatura (°C)</FormLabel>
+        <FormInput
           type="number"
           placeholder="np. 36.6"
           step="0.1"
@@ -566,7 +537,7 @@ function HealthForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
       </div>
 
       <div>
-        <Label>Notatki</Label>
+        <FormLabel>Notatki</FormLabel>
         <Textarea
           placeholder="np. podano lek, dziecko marudne..."
           value={notes}
@@ -575,13 +546,8 @@ function HealthForm({ onSave }: { onSave: (data: Record<string, unknown>, t: str
       </div>
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz temperaturę</SubmitButton>
@@ -604,8 +570,8 @@ function MilestoneForm({ onSave }: { onSave: (data: Record<string, unknown>, t: 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Opis kamienia milowego</Label>
-        <Input
+        <FormLabel>Opis kamienia milowego</FormLabel>
+        <FormInput
           type="text"
           placeholder="np. Pierwsze uśmiechy, Uniosła główkę..."
           value={description}
@@ -615,13 +581,8 @@ function MilestoneForm({ onSave }: { onSave: (data: Record<string, unknown>, t: 
       </div>
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz kamień milowy</SubmitButton>
@@ -644,7 +605,7 @@ function NoteForm({ onSave }: { onSave: (data: Record<string, unknown>, t: strin
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div>
-        <Label>Treść notatki</Label>
+        <FormLabel>Treść notatki</FormLabel>
         <Textarea
           placeholder="Wpisz notatkę..."
           value={text}
@@ -654,13 +615,8 @@ function NoteForm({ onSave }: { onSave: (data: Record<string, unknown>, t: strin
       </div>
 
       <div>
-        <Label>Godzina</Label>
-        <Input
-          type="datetime-local"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          required
-        />
+        <FormLabel>Godzina</FormLabel>
+        <DateTimeInput value={time} onChange={setTime} required />
       </div>
 
       <SubmitButton loading={loading}>Zapisz notatkę</SubmitButton>
@@ -688,7 +644,6 @@ export default function LogPage() {
       try {
         const saved = await postEvent(type, data, occurredAt)
         showToast("Zapisano!", "success")
-        // Track active sleep
         if (type === "sleep") {
           if (data.endTime) {
             setActiveSleep(null)
@@ -704,7 +659,7 @@ export default function LogPage() {
     [showToast, closeSheet]
   )
 
-  const sheetTitle: Record<EventType, string> = {
+  const dialogTitle: Record<EventType, string> = {
     feeding: "🍼 Karmienie",
     diaper: "🧷 Pielucha",
     sleep: activeSleep ? "☀️ Wstała" : "🌙 Zasnęła",
@@ -716,15 +671,15 @@ export default function LogPage() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-5">
+    <div className="max-w-3xl mx-auto px-4 py-5">
       {/* Header */}
       <div className="mb-5">
         <h1 className="text-xl font-bold text-gray-800">Szybki wpis</h1>
         <p className="text-sm text-gray-400 mt-0.5">Naciśnij by dodać zdarzenie</p>
       </div>
 
-      {/* Grid */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* Grid — 2 cols on mobile, 4 cols on desktop */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {quickButtons.map((btn) => {
           const isSleepActive = btn.type === "sleep" && activeSleep
           return (
@@ -745,18 +700,20 @@ export default function LogPage() {
                 {isSleepActive ? "Wstała" : btn.label}
               </span>
               {isSleepActive && (
-                <span className="text-xs text-yellow-500 font-normal">
-                  Śpi...
-                </span>
+                <span className="text-xs text-yellow-500 font-normal">Śpi...</span>
               )}
             </button>
           )
         })}
       </div>
 
-      {/* Bottom sheets */}
-      {activeSheet && (
-        <BottomSheet title={sheetTitle[activeSheet]} onClose={closeSheet}>
+      {/* Dialog — renders in portal, always above nav */}
+      <Dialog open={activeSheet !== null} onOpenChange={(open) => { if (!open) closeSheet() }}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{activeSheet ? dialogTitle[activeSheet] : ""}</DialogTitle>
+          </DialogHeader>
+
           {activeSheet === "feeding" && (
             <FeedingForm onSave={(d, t) => handleSave("feeding", d, t)} />
           )}
@@ -784,13 +741,11 @@ export default function LogPage() {
           {activeSheet === "note" && (
             <NoteForm onSave={(d, t) => handleSave("note", d, t)} />
           )}
-        </BottomSheet>
-      )}
+        </DialogContent>
+      </Dialog>
 
       {/* Toast */}
-      {toast && (
-        <Toast toast={toast} onClose={() => setToast(null)} />
-      )}
+      {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
     </div>
   )
 }

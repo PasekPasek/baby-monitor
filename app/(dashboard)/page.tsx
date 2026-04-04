@@ -77,20 +77,16 @@ export default async function DashboardPage() {
   const styles = urgencyStyles[urgency]
 
   return (
-    <div className="max-w-md mx-auto px-4 py-4 flex flex-col gap-5">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-5">
       {/* Baby age header */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 px-4">
         <BabyAge birthDate={baby.birthDate} name={baby.name} />
       </div>
 
       {/* Last feeding card */}
-      <div
-        className={`rounded-2xl border px-4 py-3.5 flex items-center gap-3 ${styles.card}`}
-      >
+      <div className={`rounded-2xl border px-4 py-3.5 flex items-center gap-3 ${styles.card}`}>
         <div className="flex-shrink-0">
-          <span className="text-2xl" aria-hidden="true">
-            🍼
-          </span>
+          <span className="text-2xl" aria-hidden="true">🍼</span>
         </div>
         <div className="flex-1 min-w-0">
           <p className={`text-xs font-medium uppercase tracking-wide ${styles.label}`}>
