@@ -224,8 +224,10 @@ function SubmitButton({ loading, children }: { loading: boolean; children: React
 
 function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: string) => Promise<void> }) {
   const [feedType, setFeedType] = useState<"breast" | "bottle">("breast")
-  const [side, setSide] = useState<"L" | "R">("L")
-  const [duration, setDuration] = useState("")
+  const [side, setSide] = useState<"both" | "L" | "R">("both")
+  const [durationL, setDurationL] = useState("")
+  const [durationR, setDurationR] = useState("")
+  const [durationSingle, setDurationSingle] = useState("")
   const [amount, setAmount] = useState("")
   const [time, setTime] = useState(toLocalDateTimeString(new Date()))
   const [loading, setLoading] = useState(false)
@@ -236,7 +238,16 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
     const data: Record<string, unknown> = { type: feedType }
     if (feedType === "breast") {
       data.side = side
-      if (duration) data.durationMin = Number(duration)
+      if (side === "both") {
+        const l = durationL ? Number(durationL) : 0
+        const r = durationR ? Number(durationR) : 0
+        if (l > 0) data.durationMinL = l
+        if (r > 0) data.durationMinR = r
+        const total = l + r
+        if (total > 0) data.durationMin = total
+      } else {
+        if (durationSingle) data.durationMin = Number(durationSingle)
+      }
     } else {
       if (amount) data.amountMl = Number(amount)
     }
@@ -266,24 +277,52 @@ function FeedingForm({ onSave }: { onSave: (data: Record<string, unknown>, t: st
             <RadioGroup
               name="side"
               value={side}
-              onChange={(v) => setSide(v as "L" | "R")}
+              onChange={(v) => setSide(v as "both" | "L" | "R")}
               options={[
+                { value: "both", label: "Obie (L+R)" },
                 { value: "L", label: "Lewa (L)" },
                 { value: "R", label: "Prawa (R)" },
               ]}
             />
           </div>
-          <div>
-            <FormLabel>Czas karmienia (minuty)</FormLabel>
-            <FormInput
-              type="number"
-              placeholder="np. 15"
-              min="1"
-              max="120"
-              value={duration}
-              onChange={(e) => setDuration(e.target.value)}
-            />
-          </div>
+          {side === "both" ? (
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <FormLabel>Lewa (min)</FormLabel>
+                <FormInput
+                  type="number"
+                  placeholder="np. 10"
+                  min="0"
+                  max="120"
+                  value={durationL}
+                  onChange={(e) => setDurationL(e.target.value)}
+                />
+              </div>
+              <div className="flex-1">
+                <FormLabel>Prawa (min)</FormLabel>
+                <FormInput
+                  type="number"
+                  placeholder="np. 5"
+                  min="0"
+                  max="120"
+                  value={durationR}
+                  onChange={(e) => setDurationR(e.target.value)}
+                />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <FormLabel>Czas karmienia (minuty)</FormLabel>
+              <FormInput
+                type="number"
+                placeholder="np. 15"
+                min="1"
+                max="120"
+                value={durationSingle}
+                onChange={(e) => setDurationSingle(e.target.value)}
+              />
+            </div>
+          )}
         </>
       ) : (
         <div>

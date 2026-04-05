@@ -21,7 +21,12 @@ Zwróć JSON z polami:
 - confirmationMessage: krótkie potwierdzenie po polsku (max 100 znaków) + ostrzeżenie jeśli wartości są niepokojące
 
 SCHEMATY DATA:
-feeding: {type:"breast"|"bottle", side?:"L"|"R", durationMin?:number, amountMl?:number}
+feeding: {type:"breast"|"bottle", side?:"L"|"R"|"both", durationMin?:number, durationMinL?:number, durationMinR?:number, amountMl?:number}
+Zasady dla karmienia piersią:
+- "pierś 15min" lub "karmiłam 15min" → side:"both", durationMin:15 (brak strony = obie, domyślnie)
+- "pierś L 10min" → side:"L", durationMin:10
+- "pierś R 8min" → side:"R", durationMin:8
+- "pierś L 10min R 5min" lub "L 10 R 5" → side:"both", durationMinL:10, durationMinR:5, durationMin:15
 sleep: {startTime?:string, endTime?:string}
 weight: {grams:number}
 height: {cm:number}

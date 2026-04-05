@@ -32,6 +32,14 @@ function formatEventData(type: string, data: unknown): string {
   switch (type) {
     case "feeding": {
       if (d.type === "breast") {
+        if (d.side === "both") {
+          const parts: string[] = []
+          if (d.durationMinL) parts.push(`L ${d.durationMinL}min`)
+          if (d.durationMinR) parts.push(`R ${d.durationMinR}min`)
+          const detail = parts.length > 0 ? ` (${parts.join(" + ")})` : ""
+          const total = d.durationMin ? ` ${d.durationMin}min` : ""
+          return `Pierś obie${detail || total}`
+        }
         const side = d.side ? ` ${d.side}` : ""
         const duration = d.durationMin ? ` ${d.durationMin}min` : ""
         return `Pierś${side}${duration}`
