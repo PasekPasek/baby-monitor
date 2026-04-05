@@ -1,6 +1,6 @@
 /**
  * Heartbeat AI Agent — runs every 30 minutes via cron-job.org
- * Checks baby data and sends SMS reminders when needed.
+ * Checks baby data and sends Telegram reminders when needed.
  * Pattern from AI-devs course: tool-calling agent loop.
  *
  * Improvements:
@@ -12,7 +12,7 @@ import { openrouter, DEFAULT_MODEL, SMART_MODEL } from "./openrouter"
 import { db } from "./db"
 import { events, notifications, agentMemory, agentRuns } from "./schema"
 import { getOrCreateBaby, getBabyAge } from "./baby"
-import { sendToAllParents } from "./sms"
+import { sendToGroup } from "./telegram"
 import { desc, eq, and, gte, or, isNull } from "drizzle-orm"
 import type OpenAI from "openai"
 
@@ -80,12 +80,12 @@ const tools: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "send_sms",
-      description: "Wysyła SMS do obu rodziców. Używaj tylko gdy naprawdę potrzebne.",
+      name: "send_telegram",
+      description: "Wysyła wiadomość Telegram do grupy rodziców. Używaj tylko gdy naprawdę potrzebne. Możesz używać emoji.",
       parameters: {
         type: "object",
         properties: {
-          message: { type: "string", description: "Treść SMS (max 160 znaków)" },
+          message: { type: "string", description: "Treść wiadomości (max 4096 znaków, może zawierać emoji)" },
           notificationType: { type: "string", description: "Typ powiadomienia do logowania (np. 'feeding_reminder')" },
         },
         required: ["message", "notificationType"],
@@ -196,15 +196,15 @@ async function handleTool(name: string, args: Record<string, unknown>) {
       return { alreadySent: !!last, lastSentAt: last?.sentAt ?? null }
     }
 
-    case "send_sms": {
+    case "send_telegram": {
       const message = args.message as string
       const notType = args.notificationType as string
-      await sendToAllParents(message)
+      await sendToGroup(message)
       await db.insert(notifications).values({
         id: crypto.randomUUID(),
         babyId: baby.id,
         type: notType,
-        channel: "sms",
+        channel: "telegram",
         message,
         triggeredBy: "heartbeat",
       })
@@ -305,14 +305,14 @@ Twoje zadania w tej chwili:
 2. Sprawdź czy kąpiel była w ciągu ostatnich 3 dni
 3. Sprawdź czy waga była mierzona w ciągu ostatnich 2 dni
 4. Sprawdź czy temperatura > 37.5°C (ostatnie zdarzenie health)
-${isWeeklySummaryDay ? "5. ⭐ DZISIAJ jest niedziela wieczór — wygeneruj COTYGODNIOWE PODSUMOWANIE z zaleceniami i wyślij SMS" : ""}
+${isWeeklySummaryDay ? "5. ⭐ DZISIAJ jest niedziela wieczór — wygeneruj COTYGODNIOWE PODSUMOWANIE z zaleceniami i wyślij przez Telegram (możesz użyć emoji)" : ""}
 
 ZASADY WAGI:
-- jeśli ostatni pomiar wagi > 2 dni temu → wyślij SMS "⚖️ Czas zważyć ${baby.name}! Ostatnie ważenie było ponad 2 dni temu."
-- wyślij max 1 taki SMS dziennie (sprawdź check_notification_sent typ: 'weight_reminder', 1440 minut)
+- jeśli ostatni pomiar wagi > 2 dni temu → wyślij "⚖️ Czas zważyć ${baby.name}! Ostatnie ważenie było ponad 2 dni temu."
+- wyślij max 1 taką wiadomość dziennie (sprawdź check_notification_sent typ: 'weight_reminder', 1440 minut)
 
 ZASADY KARMIENIA dla noworodka (ilość → kiedy przypomnieć):
-- < 30ml lub < 10 min pierś → 1.5h, SMS z ostrzeżeniem "mało"
+- < 30ml lub < 10 min pierś → 1.5h, wiadomość z ostrzeżeniem "mało"
 - 30-60ml lub 10-20 min pierś → 2h
 - 60-90ml lub 20-30 min pierś → 3h
 - > 90ml lub > 30 min pierś → 3.5h
@@ -321,12 +321,11 @@ PAMIĘĆ:
 - Po każdym uruchomieniu zapisz istotne obserwacje (write_memory)
 - Jeśli widzisz powtarzający się wzorzec (np. Zuzia je mniej w nocy) — zapisz jako "pattern"
 - Jeśli podejmujesz niestandardową decyzję — zapisz jako "decision" z uzasadnieniem
-- Jeśli zapamiętany wzorzec tłumaczy brak alertu (np. nocna przerwa w jedzeniu to norma) — nie wysyłaj SMS
+- Jeśli zapamiętany wzorzec tłumaczy brak alertu (np. nocna przerwa w jedzeniu to norma) — nie wysyłaj wiadomości
 
 WAŻNE:
-- Zawsze najpierw sprawdź check_notification_sent przed wysłaniem SMS (unikaj duplikatów)
-- SMS max 160 znaków
-- Cotygodniowe podsumowanie może być dłuższe (użyj dwóch SMS jeśli potrzeba)
+- Zawsze najpierw sprawdź check_notification_sent przed wysłaniem wiadomości (unikaj duplikatów)
+- Wiadomości Telegram mogą mieć do 4096 znaków — cotygodniowe podsumowanie może być szczegółowe
 - Zakończ po wykonaniu wszystkich sprawdzeń
 
 COTYGODNIOWE PODSUMOWANIE FORMAT:
@@ -364,8 +363,8 @@ COTYGODNIOWE PODSUMOWANIE FORMAT:
         const fn = (tc as any).function as { name: string; arguments: string }
         const args = JSON.parse(fn.arguments || "{}")
         const result = await handleTool(fn.name, args)
-        if (fn.name === "send_sms") {
-          actionsPerformed.push(`SMS: ${args.message}`)
+        if (fn.name === "send_telegram") {
+          actionsPerformed.push(`Telegram: ${args.message}`)
         }
         return {
           role: "tool" as const,

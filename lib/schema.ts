@@ -84,7 +84,7 @@ export const events = pgTable("events", {
   data: jsonb("data").notNull().default({}),
   occurredAt: timestamp("occurred_at", { mode: "date" }).notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
-  source: text("source", { enum: ["ui", "sms", "agent"] }).default("ui"),
+  source: text("source", { enum: ["ui", "sms", "agent", "telegram"] }).default("ui"),
 })
 
 // Notification log (prevents duplicates)
@@ -94,7 +94,7 @@ export const notifications = pgTable("notifications", {
     .notNull()
     .references(() => babies.id, { onDelete: "cascade" }),
   type: text("type").notNull(),
-  channel: text("channel", { enum: ["sms", "email"] }).notNull(),
+  channel: text("channel", { enum: ["sms", "email", "telegram"] }).notNull(),
   message: text("message").notNull(),
   sentTo: text("sent_to"),
   sentAt: timestamp("sent_at", { mode: "date" }).defaultNow().notNull(),

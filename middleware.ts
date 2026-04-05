@@ -5,7 +5,7 @@ export default auth((req) => {
   const { pathname } = req.nextUrl
 
   // Public paths that don't require auth
-  const publicPaths = ["/login", "/api/auth", "/api/heartbeat", "/api/sms"]
+  const publicPaths = ["/login", "/api/auth", "/api/heartbeat", "/api/telegram"]
   if (publicPaths.some((p) => pathname.startsWith(p))) {
     return NextResponse.next()
   }
@@ -19,5 +19,5 @@ export default auth((req) => {
 })
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/heartbeat|api/sms).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/heartbeat|api/telegram).*)"],
 }
