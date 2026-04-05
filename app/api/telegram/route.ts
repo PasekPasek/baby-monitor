@@ -5,15 +5,21 @@
  *
  * Security: X-Telegram-Bot-Api-Secret-Token header verified against TELEGRAM_WEBHOOK_SECRET env var.
  * Chat validation: only messages from TELEGRAM_CHAT_ID (or auto-discovered group) are processed.
+ *
+ * Query handling: AI-devs tool-calling loop pattern — agent decides what data to fetch,
+ * uses think() for internal reasoning, then responds in natural Polish.
  */
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { events, notifications, settings } from "@/lib/schema"
-import { getOrCreateBaby } from "@/lib/baby"
+import { getOrCreateBaby, getBabyAge } from "@/lib/baby"
 import { classifySMS } from "@/lib/sms-agent"
 import { sendTelegramMessage } from "@/lib/telegram"
-import { eq, and, desc } from "drizzle-orm"
+import { openrouter, DEFAULT_MODEL } from "@/lib/openrouter"
+import { getFeedingNorms } from "@/lib/feeding-norms"
+import { eq, and, desc, gte } from "drizzle-orm"
 import type { Baby } from "@/lib/schema"
+import type OpenAI from "openai"
 
 function ok() {
   return new NextResponse("OK", { status: 200 })
@@ -77,10 +83,10 @@ export async function POST(req: NextRequest) {
     return ok()
   }
 
-  // 6. Handle queries separately — look up DB and respond, don't save as event
+  // 6. Handle queries — run query agent with tools, don't save as event
   if (classified.type === "query") {
     const queryData = classified.data as { queryType: string; question: string }
-    const answer = await handleQuery(queryData.queryType, baby)
+    const answer = await handleQuery(queryData.question || queryData.queryType, baby)
     await sendTelegramMessage(chatId, answer)
     return ok()
   }
@@ -106,93 +112,313 @@ export async function POST(req: NextRequest) {
     triggeredBy: "incoming_sms",
   })
 
-  // 9. Send confirmation back to the group
-  await sendTelegramMessage(chatId, classified.confirmationMessage)
+  // 9. Confirmation — for feedings use cluster-aware AI, for others use classified message
+  let confirmMsg: string
+  if (classified.type === "feeding") {
+    confirmMsg = await generateFeedingConfirmation(classified.data, baby, classified.confirmationMessage)
+  } else {
+    confirmMsg = classified.confirmationMessage
+  }
+  await sendTelegramMessage(chatId, confirmMsg)
 
   return ok()
 }
 
-// ─── Query handler ──────────────────────────────────────────────────────────
+// ─── Feeding confirmation with cluster context (single-shot AI) ──────────────
 
-async function handleQuery(queryType: string, baby: Baby): Promise<string> {
-  const fmt = (d: Date) =>
-    d.toLocaleString("pl-PL", { timeZone: "Europe/Warsaw", dateStyle: "short", timeStyle: "short" })
+async function generateFeedingConfirmation(data: unknown, baby: Baby, fallback: string): Promise<string> {
+  try {
+    const windowStart = new Date(Date.now() - 3 * 60 * 60 * 1000)
+    const recentFeedings = await db.query.events.findMany({
+      where: and(
+        eq(events.babyId, baby.id),
+        eq(events.type, "feeding"),
+        gte(events.occurredAt, windowStart)
+      ),
+      orderBy: [desc(events.occurredAt)],
+      limit: 15,
+    })
 
-  const minutesAgo = (d: Date) => {
-    const m = Math.floor((Date.now() - d.getTime()) / 60000)
-    if (m < 60) return `${m} min temu`
-    const h = Math.floor(m / 60)
-    const rest = m % 60
-    return rest > 0 ? `${h}h ${rest}min temu` : `${h}h temu`
+    const clusterTotalMl = recentFeedings.reduce((sum, e) => {
+      const d = e.data as { amountMl?: number }
+      return sum + (d.amountMl ?? 0)
+    }, 0)
+
+    const age = getBabyAge(baby.birthDate)
+    const norms = getFeedingNorms(age.weeks)
+
+    const res = await openrouter.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: `Wygeneruj krótkie (1-2 zdania) potwierdzenie karmienia po polsku.
+Normy dla wieku ${age.label}: ${norms.minMlPerCluster}-${norms.maxMlPerCluster}ml na klaster (okno 3h).
+Zasada KLASTER: karmienia w 3h to jeden posiłek — oceniaj sumę, NIE pojedyncze karmienie.
+Jeśli suma klastra jest w normie: potwierdź pozytywnie, nawet jeśli jedno karmienie było małe.
+Jeśli suma klastra poniżej normy: ostrzeż, ale zaznacz że chodzi o sumę klastra.`,
+        },
+        {
+          role: "user",
+          content: `Nowe karmienie: ${JSON.stringify(data)}
+Klaster ostatnie 3h: ${recentFeedings.length} karmień, łącznie ${clusterTotalMl}ml
+Norma: ${norms.minMlPerCluster}-${norms.maxMlPerCluster}ml na klaster`,
+        },
+      ],
+      temperature: 0.3,
+    })
+
+    return res.choices[0]?.message?.content?.trim() ?? fallback
+  } catch (err) {
+    console.error("[Telegram] generateFeedingConfirmation failed:", err)
+    return fallback
   }
+}
 
-  switch (queryType) {
-    case "last_feeding": {
-      const last = await db.query.events.findFirst({
-        where: and(eq(events.babyId, baby.id), eq(events.type, "feeding")),
-        orderBy: [desc(events.occurredAt)],
-      })
-      if (!last) return "Brak danych o karmieniu."
-      const d = last.data as { type?: string; amountMl?: number; durationMin?: number; side?: string }
-      const details = d.type === "bottle"
-        ? `butelka ${d.amountMl ?? "?"}ml`
-        : `pierś${d.side ? ` (${d.side})` : ""}${d.durationMin ? ` ${d.durationMin}min` : ""}`
-      return `🍼 Ostatnie karmienie: ${details}\n⏰ ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
+// ─── Query agent (AI-devs tool-calling loop pattern) ─────────────────────────
+
+const queryTools: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "think",
+      description: "Wewnętrzne rozumowanie — zaplanuj co sprawdzić i dlaczego. Nie zwraca danych, tylko potwierdza OK.",
+      parameters: {
+        type: "object",
+        properties: {
+          reasoning: { type: "string", description: "Twoje przemyślenia przed pobraniem danych" },
+        },
+        required: ["reasoning"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_feedings",
+      description: "Karmienia z ostatnich N godzin. Grupuje automatycznie w klastry (okno 3h) i podaje sumy ml.",
+      parameters: {
+        type: "object",
+        properties: {
+          hours: { type: "number", description: "Ile ostatnich godzin sprawdzić (np. 24, 48, 168 dla tygodnia)" },
+        },
+        required: ["hours"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_events",
+      description: "Zdarzenia danego typu z ostatnich N godzin.",
+      parameters: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["sleep", "weight", "bath", "diaper", "milestone", "health", "note"],
+            description: "Typ zdarzenia",
+          },
+          hours: { type: "number", description: "Ile ostatnich godzin" },
+        },
+        required: ["type", "hours"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_baby_info",
+      description: "Wiek, imię i podstawowe informacje o dziecku.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_weight_trend",
+      description: "Pomiary wagi z ostatnich N dni z trendem.",
+      parameters: {
+        type: "object",
+        properties: {
+          days: { type: "number", description: "Ile ostatnich dni" },
+        },
+        required: ["days"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_feeding_norms",
+      description: "Normy karmienia AAP/WHO dla aktualnego wieku dziecka. Wywołaj gdy oceniasz czy karmienie jest prawidłowe.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+]
+
+async function handleQueryTool(name: string, args: Record<string, unknown>, baby: Baby): Promise<unknown> {
+  switch (name) {
+    case "think":
+      return { ok: true }
+
+    case "get_baby_info": {
+      const age = getBabyAge(baby.birthDate)
+      return { name: baby.name, birthDate: baby.birthDate, age }
     }
 
-    case "last_weight": {
-      const last = await db.query.events.findFirst({
-        where: and(eq(events.babyId, baby.id), eq(events.type, "weight")),
+    case "get_feedings": {
+      const hours = (args.hours as number) || 24
+      const since = new Date(Date.now() - hours * 3600 * 1000)
+      const allFeedings = await db.query.events.findMany({
+        where: and(
+          eq(events.babyId, baby.id),
+          eq(events.type, "feeding"),
+          gte(events.occurredAt, since)
+        ),
         orderBy: [desc(events.occurredAt)],
+        limit: 200,
       })
-      if (!last) return "Brak danych o wadze."
-      const d = last.data as { grams: number }
-      return `⚖️ Ostatnia waga: ${(d.grams / 1000).toFixed(3)} kg\n📅 ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
+
+      // Group into 3h clusters (process in ascending order)
+      const CLUSTER_MS = 3 * 60 * 60 * 1000
+      type Cluster = { feedingsCount: number; totalMl: number; start: Date; end: Date }
+      const clusters: Cluster[] = []
+
+      for (const f of [...allFeedings].reverse()) {
+        const d = f.data as { amountMl?: number }
+        const last = clusters[clusters.length - 1]
+        if (last && f.occurredAt.getTime() - last.end.getTime() <= CLUSTER_MS) {
+          last.feedingsCount++
+          last.totalMl += d.amountMl ?? 0
+          last.end = f.occurredAt
+        } else {
+          clusters.push({
+            feedingsCount: 1,
+            totalMl: d.amountMl ?? 0,
+            start: f.occurredAt,
+            end: f.occurredAt,
+          })
+        }
+      }
+
+      return {
+        total: allFeedings.length,
+        clusters: clusters.reverse().map((c) => ({
+          feedingsCount: c.feedingsCount,
+          totalMl: c.totalMl,
+          start: c.start,
+          end: c.end,
+          lastFeedingMinutesAgo: Math.floor((Date.now() - c.end.getTime()) / 60000),
+        })),
+        rawRecent: allFeedings.slice(0, 5).map((e) => ({
+          occurredAt: e.occurredAt,
+          data: e.data,
+          minutesAgo: Math.floor((Date.now() - e.occurredAt.getTime()) / 60000),
+        })),
+      }
     }
 
-    case "last_bath": {
-      const last = await db.query.events.findFirst({
-        where: and(eq(events.babyId, baby.id), eq(events.type, "bath")),
-        orderBy: [desc(events.occurredAt)],
-      })
-      if (!last) return "Brak danych o kąpieli."
-      return `🛁 Ostatnia kąpiel: ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
-    }
-
-    case "last_sleep": {
-      const last = await db.query.events.findFirst({
-        where: and(eq(events.babyId, baby.id), eq(events.type, "sleep")),
-        orderBy: [desc(events.occurredAt)],
-      })
-      if (!last) return "Brak danych o śnie."
-      return `😴 Ostatni sen: ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
-    }
-
-    case "summary": {
-      const since = new Date(Date.now() - 24 * 3600 * 1000)
-      const recent = await db.query.events.findMany({
-        where: and(eq(events.babyId, baby.id)),
+    case "get_events": {
+      const type = args.type as string
+      const hours = (args.hours as number) || 24
+      const since = new Date(Date.now() - hours * 3600 * 1000)
+      const rows = await db.query.events.findMany({
+        where: and(
+          eq(events.babyId, baby.id),
+          eq(events.type, type as typeof events.$inferSelect["type"]),
+          gte(events.occurredAt, since)
+        ),
         orderBy: [desc(events.occurredAt)],
         limit: 20,
       })
-      const last24 = recent.filter((e) => e.occurredAt >= since)
-      const feedings = last24.filter((e) => e.type === "feeding")
-      const lastFeeding = recent.find((e) => e.type === "feeding")
-      const lastWeight = recent.find((e) => e.type === "weight")
+      return rows.map((e) => ({
+        occurredAt: e.occurredAt,
+        data: e.data,
+        minutesAgo: Math.floor((Date.now() - e.occurredAt.getTime()) / 60000),
+      }))
+    }
 
-      const weightInfo = lastWeight
-        ? `⚖️ Waga: ${((lastWeight.data as { grams: number }).grams / 1000).toFixed(3)} kg`
-        : "⚖️ Brak pomiaru wagi"
-      const feedInfo = lastFeeding
-        ? `🍼 Ostatnie karmienie: ${minutesAgo(lastFeeding.occurredAt)}`
-        : "🍼 Brak danych o karmieniu"
+    case "get_weight_trend": {
+      const days = (args.days as number) || 7
+      const since = new Date(Date.now() - days * 24 * 3600 * 1000)
+      const weights = await db.query.events.findMany({
+        where: and(
+          eq(events.babyId, baby.id),
+          eq(events.type, "weight"),
+          gte(events.occurredAt, since)
+        ),
+        orderBy: [desc(events.occurredAt)],
+        limit: 20,
+      })
+      return weights.map((w) => ({
+        date: w.occurredAt,
+        grams: (w.data as { grams: number }).grams,
+        kg: ((w.data as { grams: number }).grams / 1000).toFixed(3),
+      }))
+    }
 
-      return `📊 ${baby.name} — ostatnie 24h:\n${feedInfo}\nKarmień dziś: ${feedings.length}\n${weightInfo}`
+    case "get_feeding_norms": {
+      const age = getBabyAge(baby.birthDate)
+      return getFeedingNorms(age.weeks)
     }
 
     default:
-      return "Nie rozumiem pytania. Spróbuj: 'kiedy karmienie?', 'ile waży?', 'kiedy kąpiel?'"
+      return { error: `Unknown tool: ${name}` }
   }
+}
+
+async function handleQuery(question: string, baby: Baby): Promise<string> {
+  const age = getBabyAge(baby.birthDate)
+  const now = new Date()
+
+  const systemPrompt = `Jesteś troskliwym asystentem rodziców noworodka ${baby.name} (wiek: ${age.label}).
+Teraz jest: ${now.toLocaleString("pl-PL", { timeZone: "Europe/Warsaw" })}
+
+Odpowiadasz na pytania rodziców po polsku, ciepło i konkretnie.
+Masz narzędzia do pobierania danych — używaj ich żeby odpowiedzieć dokładnie.
+Zawsze najpierw wywołaj think() żeby zaplanować co sprawdzić, potem pobierz dane, potem odpowiedz.
+Odpowiedź: naturalna narracja po polsku, jak troskliwy pediatra — nie lista danych.
+Krótkie pytania (kiedy, ile): max 2-3 zdania. Podsumowania dnia: max 5-6 zdań. Tygodniowe: max 8-10 zdań.`
+
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: question },
+  ]
+
+  for (let step = 0; step < 8; step++) {
+    const response = await openrouter.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages,
+      tools: queryTools,
+      tool_choice: "auto",
+      temperature: 0.3,
+    })
+
+    const choice = response.choices[0]
+    messages.push(choice.message)
+
+    if (choice.finish_reason === "stop" || !choice.message.tool_calls?.length) {
+      return choice.message.content ?? "Przepraszam, coś poszło nie tak."
+    }
+
+    const toolResults = await Promise.all(
+      choice.message.tool_calls.map(async (tc) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fn = (tc as any).function as { name: string; arguments: string }
+        const toolArgs = JSON.parse(fn.arguments || "{}")
+        const result = await handleQueryTool(fn.name, toolArgs, baby)
+        return {
+          role: "tool" as const,
+          tool_call_id: tc.id,
+          content: JSON.stringify(result),
+        }
+      })
+    )
+    messages.push(...toolResults)
+  }
+
+  return "Przepraszam, nie udało mi się zebrać danych."
 }
 
 // ─── Telegram Update types ──────────────────────────────────────────────────

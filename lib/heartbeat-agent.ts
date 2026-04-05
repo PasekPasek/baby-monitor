@@ -13,6 +13,7 @@ import { db } from "./db"
 import { events, notifications, agentMemory, agentRuns } from "./schema"
 import { getOrCreateBaby, getBabyAge } from "./baby"
 import { sendToGroup } from "./telegram"
+import { getFeedingNorms } from "./feeding-norms"
 import { desc, eq, and, gte, or, isNull } from "drizzle-orm"
 import type OpenAI from "openai"
 
@@ -159,9 +160,9 @@ async function handleTool(name: string, args: Record<string, unknown>) {
       })
       if (!last) return null
 
-      // For feeding: aggregate all feedings within 90 min of the last one (cluster feeding session)
+      // For feeding: aggregate all feedings within 3h of the last one (cluster feeding session)
       if (type === "feeding") {
-        const sessionStart = new Date(last.occurredAt.getTime() - 90 * 60 * 1000)
+        const sessionStart = new Date(last.occurredAt.getTime() - 3 * 60 * 60 * 1000)
         const session = await db.query.events.findMany({
           where: and(
             eq(events.babyId, baby.id),
@@ -183,7 +184,7 @@ async function handleTool(name: string, args: Record<string, unknown>) {
           occurredAt: last.occurredAt,
           data: { ...(last.data as object), sessionTotalMl: totalMl || undefined, sessionTotalMin: totalMin || undefined, sessionFeedings: session.length },
           minutesAgo: Math.floor((Date.now() - last.occurredAt.getTime()) / 60000),
-          note: session.length > 1 ? `Sesja ${session.length} karmień łącznie: ${totalMl}ml / ${totalMin}min` : undefined,
+          note: session.length > 1 ? `Klaster ${session.length} karmień łącznie: ${totalMl}ml / ${totalMin}min (okno 3h)` : undefined,
         }
       }
 
@@ -323,6 +324,8 @@ export async function runHeartbeatAgent(): Promise<{ actionsPerformed: string[] 
   // Propozycja 4: Use SMART_MODEL for weekly summary (better quality reasoning)
   const model = isWeeklySummaryDay ? SMART_MODEL : DEFAULT_MODEL
 
+  const norms = getFeedingNorms(age.weeks)
+
   const systemPrompt = `Jesteś troskliwym asystentem monitorującym noworodka ${baby.name} (wiek: ${age.label}, urodzony ${baby.birthDate.toLocaleDateString("pl-PL")}).
 
 Teraz jest: ${now.toLocaleString("pl-PL", { timeZone: "Europe/Warsaw" })}
@@ -341,24 +344,24 @@ ZASADY WAGI:
 - wyślij max 1 taką wiadomość dziennie (sprawdź check_notification_sent typ: 'weight_reminder', 1440 minut)
 
 ZASADY KARMIENIA (oparte na AAP/WHO dla noworodka):
-- get_last_event("feeding") zwraca sessionTotalMl/sessionTotalMin/sessionFeedings — SUMA z ostatnich 90 min
-  Przykład: 40ml o 14:00 + 15ml o 14:20 = sesja 55ml, minutesAgo liczy od OSTATNIEGO karmienia w sesji
+- get_last_event("feeding") zwraca sessionTotalMl/sessionTotalMin/sessionFeedings — SUMA z ostatnich 3h (okno klastrowe)
+  Przykład: 40ml o 14:00 + 15ml o 14:20 = klaster 55ml, minutesAgo liczy od OSTATNIEGO karmienia w klastrze
 - Używaj sessionTotalMl/sessionTotalMin do oceny — NIE pojedynczego wpisu
-- "Cluster feeding" (2-4 karmienia w 90 min) jest NORMALNY — nie panikuj, licz łączną ilość
+- "Cluster feeding" (kilka karmień w 3h) jest NORMALNY — licz łączną ilość klastra
 
-NORMY wg wieku (z get_baby_info):
-- 0-2 tygodnie: 30-90ml/sesję, max 4h bez karmienia, 8-12 karmień/dobę
-- 2-6 tygodni:  60-120ml/sesję, max 4h bez karmienia, 8-10 karmień/dobę
-- 6-12 tygodni: 120-180ml/sesję, max 4-5h bez karmienia, 5-8 karmień/dobę
+NORMY dla aktualnego wieku ${age.label}:
+- Klaster (3h): ${norms.minMlPerCluster}-${norms.maxMlPerCluster}ml
+- Karmień/dobę: ${norms.feedsPerDay.min}-${norms.feedsPerDay.max}
+- ${norms.notes}
 
-Ilość łączna sesji → kiedy następne przypomnienie (od ostatniego karmienia):
+Suma klastra → kiedy następne przypomnienie (od ostatniego karmienia w klastrze):
 - < 30ml łącznie → 1.5h + ostrzeżenie "mało, obserwuj"
 - 30-60ml → 2h
 - 60-90ml → 3h
 - > 90ml → 3.5h
 - pierś < 10 min → 1.5h; 10-20 min → 2h; 20-30 min → 3h; > 30 min → 3.5h
 
-BEZWZGLĘDNY ALERT (zawsze wyślij, niezależnie od sesji):
+BEZWZGLĘDNY ALERT (zawsze wyślij, niezależnie od klastra):
 - Ponad 4h bez jakiegokolwiek karmienia (0-6 tygodni)
 - Ponad 5h bez karmienia (6-12 tygodni)
 

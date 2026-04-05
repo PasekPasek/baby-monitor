@@ -31,7 +31,7 @@ diaper: {type:"wet"|"dirty"|"both", color?:string}
 milestone: {description:string, category?:string}
 health: {subtype:"temperature"|"medication"|"vaccine"|"test_result"|"doctor_visit", value?:number, unit?:string, notes:string}
 note: {text:string}
-query: {queryType:"last_feeding"|"last_weight"|"last_bath"|"last_sleep"|"summary", question:string}
+query: {queryType:"last_feeding"|"last_weight"|"last_bath"|"last_sleep"|"summary"|"weekly", question:string}
 
 ROZPOZNAWANIE ZAPYTAŃ (type="query") — PRIORYTET przed innymi typami:
 Jeśli wiadomość to PYTANIE lub PROŚBA O INFORMACJĘ — zawsze type=query, NIE note.
@@ -42,7 +42,7 @@ Przykłady zapytań:
 - "czy jadła?", "czy spała?", "co ostatnio?"
 - każde zdanie kończące się "?"
 - każde zdanie zaczynające się od: kiedy, ile, czy, co, jak, która, skąd, gdzie
-queryType: "last_feeding" dla pytań o karmienie, "last_weight" o wagę, "last_bath" o kąpiel, "last_sleep" o sen, "summary" dla ogólnych
+queryType: "last_feeding" dla pytań o karmienie, "last_weight" o wagę, "last_bath" o kąpiel, "last_sleep" o sen, "summary" dla ogólnych pytań o dzień, "weekly" dla pytań o tydzień (podsumowanie tygodnia, jak idzie tydzień, tygodniowy raport)
 
 UWAGA: type=note TYLKO gdy rodzic CELOWO dodaje notatkę tekstową (np. "notatka: ...", "zanotuj że..."). Pytania to ZAWSZE query.
 
