@@ -64,8 +64,16 @@ export async function classifySMS(
   babyName: string
 ): Promise<ClassifiedEvent | null> {
   try {
-    const now = new Date().toISOString()
-    const userPrompt = `Teraz jest: ${now}\nWiadomość od rodzica (${senderPhone}):\n"${message}"\n\nDziecko: ${babyName}`
+    const now = new Date()
+    // Pass Warsaw local time WITH offset so AI generates correct ISO timestamps
+    // e.g. "2024-01-15T14:30:00+02:00" not "2024-01-15T14:30:00Z"
+    const warsawLocal = now.toLocaleString("sv", { timeZone: "Europe/Warsaw" }) // "2024-01-15 14:30:00"
+    const warsawAsIfUTC = new Date(warsawLocal.replace(" ", "T") + "Z")
+    const offsetH = Math.round((warsawAsIfUTC.getTime() - now.getTime()) / 3600000)
+    const sign = offsetH >= 0 ? "+" : "-"
+    const warsawISO = `${warsawLocal.replace(" ", "T")}${sign}${String(Math.abs(offsetH)).padStart(2, "0")}:00`
+
+    const userPrompt = `Teraz jest: ${warsawISO} (strefa Europe/Warsaw)\nWiadomość od rodzica (${senderPhone}):\n"${message}"\n\nDziecko: ${babyName}\nUWAGA: Godziny w wiadomości (np. "14:00") są w strefie Europe/Warsaw. Generuj occurredAt z offsetem ${sign}${String(Math.abs(offsetH)).padStart(2, "0")}:00.`
 
     const response = await openrouter.chat.completions.create({
       model: DEFAULT_MODEL,

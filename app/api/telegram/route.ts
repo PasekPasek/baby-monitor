@@ -83,6 +83,12 @@ export async function POST(req: NextRequest) {
     return ok()
   }
 
+  // Clamp future timestamps — if AI parsed a time that's in the future, cap at now
+  if (classified.occurredAt > new Date()) {
+    console.warn(`[Telegram] Future timestamp clamped: ${classified.occurredAt.toISOString()}`)
+    classified.occurredAt = new Date()
+  }
+
   // 6. Handle queries — run query agent with tools, don't save as event
   if (classified.type === "query") {
     const queryData = classified.data as { queryType: string; question: string }
