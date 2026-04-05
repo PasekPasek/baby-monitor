@@ -4,7 +4,7 @@ import { getOrCreateBaby } from "@/lib/baby"
 import { events } from "@/lib/schema"
 import { desc, eq } from "drizzle-orm"
 import BabyAge from "@/components/BabyAge"
-import EventFeed from "@/components/EventFeed"
+import DashboardClient from "@/components/DashboardClient"
 import type { Event } from "@/lib/schema"
 
 function formatDuration(ms: number): string {
@@ -107,7 +107,7 @@ export default async function DashboardPage() {
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">
           Ostatnie zdarzenia
         </h2>
-        <EventFeed events={recentEvents} />
+        <DashboardClient initialEvents={recentEvents} />
       </section>
     </div>
   )

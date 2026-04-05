@@ -33,11 +33,18 @@ health: {subtype:"temperature"|"medication"|"vaccine"|"test_result"|"doctor_visi
 note: {text:string}
 query: {queryType:"last_feeding"|"last_weight"|"last_bath"|"last_sleep"|"summary", question:string}
 
-ROZPOZNAWANIE ZAPYTAŃ (type="query"):
-- Pytania o ostatnie zdarzenie: "kiedy karmienie?", "ostatnie karmienie", "kiedy jadła?", "ile zjadła?", "kiedy waga?", "kiedy kąpiel?" itp.
-- Pytania o podsumowanie: "jak idzie?", "co się dzieje?", "podsumowanie", "raport"
-- Każde pytanie zaczynające się od: kiedy, ile, czy, co, jak, która → type=query
-- queryType dobierz do kontekstu pytania
+ROZPOZNAWANIE ZAPYTAŃ (type="query") — PRIORYTET przed innymi typami:
+Jeśli wiadomość to PYTANIE lub PROŚBA O INFORMACJĘ — zawsze type=query, NIE note.
+Przykłady zapytań:
+- "kiedy jadła?", "kiedy karmienie?", "ostatnie karmienie", "ile zjadła?"
+- "kiedy kąpiel?", "kiedy była ważona?", "ile waży?"
+- "jak idzie?", "co słychać?", "podsumowanie", "raport"
+- "czy jadła?", "czy spała?", "co ostatnio?"
+- każde zdanie kończące się "?"
+- każde zdanie zaczynające się od: kiedy, ile, czy, co, jak, która, skąd, gdzie
+queryType: "last_feeding" dla pytań o karmienie, "last_weight" o wagę, "last_bath" o kąpiel, "last_sleep" o sen, "summary" dla ogólnych
+
+UWAGA: type=note TYLKO gdy rodzic CELOWO dodaje notatkę tekstową (np. "notatka: ...", "zanotuj że..."). Pytania to ZAWSZE query.
 
 OSTRZEŻENIA (dla zdarzeń, nie zapytań):
 - karmienie butelką < 30ml → dodaj "⚠️ Mało (norma: 60-90ml)"

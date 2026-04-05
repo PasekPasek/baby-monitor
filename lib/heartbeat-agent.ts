@@ -158,6 +158,35 @@ async function handleTool(name: string, args: Record<string, unknown>) {
         orderBy: [desc(events.occurredAt)],
       })
       if (!last) return null
+
+      // For feeding: aggregate all feedings within 90 min of the last one (cluster feeding session)
+      if (type === "feeding") {
+        const sessionStart = new Date(last.occurredAt.getTime() - 90 * 60 * 1000)
+        const session = await db.query.events.findMany({
+          where: and(
+            eq(events.babyId, baby.id),
+            eq(events.type, "feeding"),
+            gte(events.occurredAt, sessionStart)
+          ),
+          orderBy: [desc(events.occurredAt)],
+        })
+        const totalMl = session.reduce((sum, e) => {
+          const d = e.data as { amountMl?: number }
+          return sum + (d.amountMl ?? 0)
+        }, 0)
+        const totalMin = session.reduce((sum, e) => {
+          const d = e.data as { durationMin?: number }
+          return sum + (d.durationMin ?? 0)
+        }, 0)
+        return {
+          id: last.id,
+          occurredAt: last.occurredAt,
+          data: { ...(last.data as object), sessionTotalMl: totalMl || undefined, sessionTotalMin: totalMin || undefined, sessionFeedings: session.length },
+          minutesAgo: Math.floor((Date.now() - last.occurredAt.getTime()) / 60000),
+          note: session.length > 1 ? `Sesja ${session.length} karmień łącznie: ${totalMl}ml / ${totalMin}min` : undefined,
+        }
+      }
+
       return {
         id: last.id,
         occurredAt: last.occurredAt,
@@ -311,11 +340,27 @@ ZASADY WAGI:
 - jeśli ostatni pomiar wagi > 2 dni temu → wyślij "⚖️ Czas zważyć ${baby.name}! Ostatnie ważenie było ponad 2 dni temu."
 - wyślij max 1 taką wiadomość dziennie (sprawdź check_notification_sent typ: 'weight_reminder', 1440 minut)
 
-ZASADY KARMIENIA dla noworodka (ilość → kiedy przypomnieć):
-- < 30ml lub < 10 min pierś → 1.5h, wiadomość z ostrzeżeniem "mało"
-- 30-60ml lub 10-20 min pierś → 2h
-- 60-90ml lub 20-30 min pierś → 3h
-- > 90ml lub > 30 min pierś → 3.5h
+ZASADY KARMIENIA (oparte na AAP/WHO dla noworodka):
+- get_last_event("feeding") zwraca sessionTotalMl/sessionTotalMin/sessionFeedings — SUMA z ostatnich 90 min
+  Przykład: 40ml o 14:00 + 15ml o 14:20 = sesja 55ml, minutesAgo liczy od OSTATNIEGO karmienia w sesji
+- Używaj sessionTotalMl/sessionTotalMin do oceny — NIE pojedynczego wpisu
+- "Cluster feeding" (2-4 karmienia w 90 min) jest NORMALNY — nie panikuj, licz łączną ilość
+
+NORMY wg wieku (z get_baby_info):
+- 0-2 tygodnie: 30-90ml/sesję, max 4h bez karmienia, 8-12 karmień/dobę
+- 2-6 tygodni:  60-120ml/sesję, max 4h bez karmienia, 8-10 karmień/dobę
+- 6-12 tygodni: 120-180ml/sesję, max 4-5h bez karmienia, 5-8 karmień/dobę
+
+Ilość łączna sesji → kiedy następne przypomnienie (od ostatniego karmienia):
+- < 30ml łącznie → 1.5h + ostrzeżenie "mało, obserwuj"
+- 30-60ml → 2h
+- 60-90ml → 3h
+- > 90ml → 3.5h
+- pierś < 10 min → 1.5h; 10-20 min → 2h; 20-30 min → 3h; > 30 min → 3.5h
+
+BEZWZGLĘDNY ALERT (zawsze wyślij, niezależnie od sesji):
+- Ponad 4h bez jakiegokolwiek karmienia (0-6 tygodni)
+- Ponad 5h bez karmienia (6-12 tygodni)
 
 PAMIĘĆ:
 - Po każdym uruchomieniu zapisz istotne obserwacje (write_memory)

@@ -1,8 +1,15 @@
 "use client"
 
+import { useState } from "react"
 import { formatDistanceToNow, format, isToday, isYesterday } from "date-fns"
 import { pl } from "date-fns/locale"
 import EventIcon from "./EventIcon"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import type { Event } from "@/lib/schema"
 
 const typeLabels: Record<string, string> = {
@@ -116,6 +123,17 @@ interface EventFeedProps {
 }
 
 export default function EventFeed({ events, onDelete }: EventFeedProps) {
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+
+  const handleDeleteClick = (id: string) => setPendingDeleteId(id)
+  const handleConfirm = () => {
+    if (pendingDeleteId && onDelete) {
+      onDelete(pendingDeleteId)
+    }
+    setPendingDeleteId(null)
+  }
+  const handleCancel = () => setPendingDeleteId(null)
+
   if (events.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 py-12 text-gray-400">
@@ -128,6 +146,7 @@ export default function EventFeed({ events, onDelete }: EventFeedProps) {
   const grouped = groupEventsByDay(events)
 
   return (
+    <>
     <div className="flex flex-col gap-4">
       {Array.from(grouped.entries()).map(([dateKey, dayEvents]) => {
         const dayDate = new Date(dateKey + "T12:00:00")
@@ -173,7 +192,7 @@ export default function EventFeed({ events, onDelete }: EventFeedProps) {
                     {/* Delete button */}
                     {onDelete && (
                       <button
-                        onClick={() => onDelete(event.id)}
+                        onClick={() => handleDeleteClick(event.id)}
                         className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 active:bg-red-100 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-red-300"
                         aria-label="Usuń zdarzenie"
                         title="Usuń"
@@ -205,5 +224,33 @@ export default function EventFeed({ events, onDelete }: EventFeedProps) {
         )
       })}
     </div>
+
+    {/* Confirmation modal */}
+
+    <Dialog open={pendingDeleteId !== null} onOpenChange={(open) => { if (!open) handleCancel() }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Usuń zdarzenie?</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-gray-500 mt-1">
+          Tej operacji nie można cofnąć.
+        </p>
+        <div className="flex gap-3 mt-4">
+          <button
+            onClick={handleCancel}
+            className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Anuluj
+          </button>
+          <button
+            onClick={handleConfirm}
+            className="flex-1 py-2.5 rounded-xl bg-red-500 text-sm font-medium text-white hover:bg-red-600 active:bg-red-700 transition-colors"
+          >
+            Usuń
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }
