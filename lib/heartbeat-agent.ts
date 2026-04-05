@@ -179,12 +179,24 @@ async function handleTool(name: string, args: Record<string, unknown>) {
           const d = e.data as { durationMin?: number }
           return sum + (d.durationMin ?? 0)
         }, 0)
+        // Determine dominant feeding type in cluster
+        const hasBotlle = session.some((e) => (e.data as { type?: string }).type === "bottle")
+        const hasBreast = session.some((e) => (e.data as { type?: string }).type === "breast")
+        const sessionFeedingType = hasBotlle && hasBreast ? "mixed" : hasBotlle ? "bottle" : "breast"
         return {
           id: last.id,
           occurredAt: last.occurredAt,
-          data: { ...(last.data as object), sessionTotalMl: totalMl || undefined, sessionTotalMin: totalMin || undefined, sessionFeedings: session.length },
+          data: {
+            ...(last.data as object),
+            sessionFeedingType,
+            sessionTotalMl: totalMl || undefined,
+            sessionTotalMin: totalMin || undefined,
+            sessionFeedings: session.length,
+          },
           minutesAgo: Math.floor((Date.now() - last.occurredAt.getTime()) / 60000),
-          note: session.length > 1 ? `Klaster ${session.length} karmień łącznie: ${totalMl}ml / ${totalMin}min (okno 3h)` : undefined,
+          note: session.length > 1
+            ? `Klaster ${session.length} karmień (${sessionFeedingType}): ${totalMl > 0 ? totalMl + "ml" : ""} ${totalMin > 0 ? totalMin + "min" : ""} (okno 3h)`.trim()
+            : undefined,
         }
       }
 
@@ -355,11 +367,18 @@ NORMY dla aktualnego wieku ${age.label}:
 - ${norms.notes}
 
 Suma klastra → kiedy następne przypomnienie (od ostatniego karmienia w klastrze):
+
+BUTELKA (sessionFeedingType === "bottle" lub "mixed", używaj sessionTotalMl):
 - < 30ml łącznie → 1.5h + ostrzeżenie "mało, obserwuj"
 - 30-60ml → 2h
 - 60-90ml → 3h
 - > 90ml → 3.5h
-- pierś < 10 min → 1.5h; 10-20 min → 2h; 20-30 min → 3h; > 30 min → 3.5h
+
+PIERŚ (sessionFeedingType === "breast", używaj sessionTotalMin — NIE ml-owych reguł!):
+- < 10 min łącznie → 1.5h + ostrzeżenie "krótko, sprawdź przystawienie"
+- 10-20 min → 2h
+- 20-30 min → 3h
+- > 30 min → 3.5h
 
 BEZWZGLĘDNY ALERT (zawsze wyślij, niezależnie od klastra):
 - Ponad 4h bez jakiegokolwiek karmienia (0-6 tygodni)
