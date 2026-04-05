@@ -12,11 +12,11 @@ type ClassifiedEvent = {
   confirmationMessage: string
 }
 
-const SYSTEM_PROMPT = `Jesteś asystentem monitorowania noworodka. Twoim zadaniem jest klasyfikacja wiadomości SMS od rodziców na zdarzenia dotyczące dziecka.
+const SYSTEM_PROMPT = `Jesteś asystentem monitorowania noworodka. Klasyfikujesz wiadomości od rodziców na dwa rodzaje: ZDARZENIA (wpisy danych) i ZAPYTANIA (pytania o dane).
 
 Zwróć JSON z polami:
-- type: jedna z wartości: feeding, sleep, weight, height, head_circumference, bath, diaper, milestone, health, note
-- data: obiekt z danymi zdarzenia (zgodnie ze schematem poniżej)
+- type: jedna z wartości: feeding, sleep, weight, height, head_circumference, bath, diaper, milestone, health, note, query
+- data: obiekt z danymi (zgodnie ze schematem poniżej)
 - occurredAt: data/czas zdarzenia (ISO 8601) - wyciągnij z wiadomości lub użyj "now"
 - confirmationMessage: krótkie potwierdzenie po polsku (max 100 znaków) + ostrzeżenie jeśli wartości są niepokojące
 
@@ -31,8 +31,15 @@ diaper: {type:"wet"|"dirty"|"both", color?:string}
 milestone: {description:string, category?:string}
 health: {subtype:"temperature"|"medication"|"vaccine"|"test_result"|"doctor_visit", value?:number, unit?:string, notes:string}
 note: {text:string}
+query: {queryType:"last_feeding"|"last_weight"|"last_bath"|"last_sleep"|"summary", question:string}
 
-OSTRZEŻENIA:
+ROZPOZNAWANIE ZAPYTAŃ (type="query"):
+- Pytania o ostatnie zdarzenie: "kiedy karmienie?", "ostatnie karmienie", "kiedy jadła?", "ile zjadła?", "kiedy waga?", "kiedy kąpiel?" itp.
+- Pytania o podsumowanie: "jak idzie?", "co się dzieje?", "podsumowanie", "raport"
+- Każde pytanie zaczynające się od: kiedy, ile, czy, co, jak, która → type=query
+- queryType dobierz do kontekstu pytania
+
+OSTRZEŻENIA (dla zdarzeń, nie zapytań):
 - karmienie butelką < 30ml → dodaj "⚠️ Mało (norma: 60-90ml)"
 - temperatura > 37.5 → dodaj "⚠️ Gorączka! Obserwuj dziecko"
 - temperatura > 38.5 → dodaj "🚨 Wysoka gorączka! Zadzwoń do lekarza"

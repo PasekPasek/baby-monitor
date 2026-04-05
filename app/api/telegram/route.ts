@@ -12,7 +12,8 @@ import { events, notifications, settings } from "@/lib/schema"
 import { getOrCreateBaby } from "@/lib/baby"
 import { classifySMS } from "@/lib/sms-agent"
 import { sendTelegramMessage } from "@/lib/telegram"
-import { eq } from "drizzle-orm"
+import { eq, and, desc } from "drizzle-orm"
+import type { Baby } from "@/lib/schema"
 
 function ok() {
   return new NextResponse("OK", { status: 200 })
@@ -76,7 +77,15 @@ export async function POST(req: NextRequest) {
     return ok()
   }
 
-  // 6. Save event to DB
+  // 6. Handle queries separately — look up DB and respond, don't save as event
+  if (classified.type === "query") {
+    const queryData = classified.data as { queryType: string; question: string }
+    const answer = await handleQuery(queryData.queryType, baby)
+    await sendTelegramMessage(chatId, answer)
+    return ok()
+  }
+
+  // 7. Save event to DB
   await db.insert(events).values({
     id: crypto.randomUUID(),
     babyId: baby.id,
@@ -86,7 +95,7 @@ export async function POST(req: NextRequest) {
     source: "telegram",
   })
 
-  // 7. Log notification
+  // 8. Log notification
   await db.insert(notifications).values({
     id: crypto.randomUUID(),
     babyId: baby.id,
@@ -97,10 +106,93 @@ export async function POST(req: NextRequest) {
     triggeredBy: "incoming_sms",
   })
 
-  // 8. Send confirmation back to the group
+  // 9. Send confirmation back to the group
   await sendTelegramMessage(chatId, classified.confirmationMessage)
 
   return ok()
+}
+
+// ─── Query handler ──────────────────────────────────────────────────────────
+
+async function handleQuery(queryType: string, baby: Baby): Promise<string> {
+  const fmt = (d: Date) =>
+    d.toLocaleString("pl-PL", { timeZone: "Europe/Warsaw", dateStyle: "short", timeStyle: "short" })
+
+  const minutesAgo = (d: Date) => {
+    const m = Math.floor((Date.now() - d.getTime()) / 60000)
+    if (m < 60) return `${m} min temu`
+    const h = Math.floor(m / 60)
+    const rest = m % 60
+    return rest > 0 ? `${h}h ${rest}min temu` : `${h}h temu`
+  }
+
+  switch (queryType) {
+    case "last_feeding": {
+      const last = await db.query.events.findFirst({
+        where: and(eq(events.babyId, baby.id), eq(events.type, "feeding")),
+        orderBy: [desc(events.occurredAt)],
+      })
+      if (!last) return "Brak danych o karmieniu."
+      const d = last.data as { type?: string; amountMl?: number; durationMin?: number; side?: string }
+      const details = d.type === "bottle"
+        ? `butelka ${d.amountMl ?? "?"}ml`
+        : `pierś${d.side ? ` (${d.side})` : ""}${d.durationMin ? ` ${d.durationMin}min` : ""}`
+      return `🍼 Ostatnie karmienie: ${details}\n⏰ ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
+    }
+
+    case "last_weight": {
+      const last = await db.query.events.findFirst({
+        where: and(eq(events.babyId, baby.id), eq(events.type, "weight")),
+        orderBy: [desc(events.occurredAt)],
+      })
+      if (!last) return "Brak danych o wadze."
+      const d = last.data as { grams: number }
+      return `⚖️ Ostatnia waga: ${(d.grams / 1000).toFixed(3)} kg\n📅 ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
+    }
+
+    case "last_bath": {
+      const last = await db.query.events.findFirst({
+        where: and(eq(events.babyId, baby.id), eq(events.type, "bath")),
+        orderBy: [desc(events.occurredAt)],
+      })
+      if (!last) return "Brak danych o kąpieli."
+      return `🛁 Ostatnia kąpiel: ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
+    }
+
+    case "last_sleep": {
+      const last = await db.query.events.findFirst({
+        where: and(eq(events.babyId, baby.id), eq(events.type, "sleep")),
+        orderBy: [desc(events.occurredAt)],
+      })
+      if (!last) return "Brak danych o śnie."
+      return `😴 Ostatni sen: ${fmt(last.occurredAt)} (${minutesAgo(last.occurredAt)})`
+    }
+
+    case "summary": {
+      const since = new Date(Date.now() - 24 * 3600 * 1000)
+      const recent = await db.query.events.findMany({
+        where: and(eq(events.babyId, baby.id)),
+        orderBy: [desc(events.occurredAt)],
+        limit: 20,
+      })
+      const last24 = recent.filter((e) => e.occurredAt >= since)
+      const feedings = last24.filter((e) => e.type === "feeding")
+      const lastFeeding = recent.find((e) => e.type === "feeding")
+      const lastWeight = recent.find((e) => e.type === "weight")
+
+      const weightInfo = lastWeight
+        ? `⚖️ Waga: ${((lastWeight.data as { grams: number }).grams / 1000).toFixed(3)} kg`
+        : "⚖️ Brak pomiaru wagi"
+      const feedInfo = lastFeeding
+        ? `🍼 Ostatnie karmienie: ${minutesAgo(lastFeeding.occurredAt)}`
+        : "🍼 Brak danych o karmieniu"
+
+      return `📊 ${baby.name} — ostatnie 24h:\n${feedInfo}\nKarmień dziś: ${feedings.length}\n${weightInfo}`
+    }
+
+    default:
+      return "Nie rozumiem pytania. Spróbuj: 'kiedy karmienie?', 'ile waży?', 'kiedy kąpiel?'"
+  }
 }
 
 // ─── Telegram Update types ──────────────────────────────────────────────────
